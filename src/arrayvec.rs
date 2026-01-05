@@ -470,69 +470,66 @@ impl<T, const CAP: usize> ArrayVec<T, CAP> {
         // dropping elements). Implementation closely mirrored here.
 
         let original_len = self.len();
-        unsafe { self.set_len(0) };
 
-        struct BackshiftOnDrop<'a, T, const CAP: usize> {
+        struct PanicGuard<'a, T, const CAP: usize> {
             v: &'a mut ArrayVec<T, CAP>,
-            processed_len: usize,
-            deleted_cnt: usize,
+            read: usize,
+            write: usize,
             original_len: usize,
         }
 
-        impl<T, const CAP: usize> Drop for BackshiftOnDrop<'_, T, CAP> {
+        impl<T, const CAP: usize> Drop for PanicGuard<'_, T, CAP> {
+            #[cold]
             fn drop(&mut self) {
-                if self.deleted_cnt > 0 {
-                    unsafe {
-                        ptr::copy(
-                            self.v.as_ptr().add(self.processed_len),
-                            self.v.as_mut_ptr().add(self.processed_len - self.deleted_cnt),
-                            self.original_len - self.processed_len
-                        );
-                    }
+                let remaining = self.original_len - self.read;
+                unsafe {
+                    ptr::copy(
+                        self.v.as_ptr().add(self.read),
+                        self.v.as_mut_ptr().add(self.write),
+                        remaining
+                    );
                 }
                 unsafe {
-                    self.v.set_len(self.original_len - self.deleted_cnt);
+                    self.v.set_len(self.write + remaining);
                 }
             }
         }
 
-        let mut g = BackshiftOnDrop { v: self, processed_len: 0, deleted_cnt: 0, original_len };
-
-        #[inline(always)]
-        fn process_one<F: FnMut(&mut T) -> bool, T, const CAP: usize, const DELETED: bool>(
-            f: &mut F,
-            g: &mut BackshiftOnDrop<'_, T, CAP>
-        ) -> bool {
-            let cur = unsafe { g.v.as_mut_ptr().add(g.processed_len) };
-            if !f(unsafe { &mut *cur }) {
-                g.processed_len += 1;
-                g.deleted_cnt += 1;
-                unsafe { ptr::drop_in_place(cur) };
-                return false;
-            }
-            if DELETED {
-                unsafe {
-                    let hole_slot = cur.sub(g.deleted_cnt);
-                    ptr::copy_nonoverlapping(cur, hole_slot, 1);
-                }
-            }
-            g.processed_len += 1;
-            true
-        }
-
-        // Stage 1: Nothing was deleted.
-        while g.processed_len != original_len {
-            if !process_one::<F, T, CAP, false>(&mut f, &mut g) {
+        let mut read = 0;
+        loop {
+            let cur = unsafe { self.get_unchecked_mut(read) };
+            if !f(cur) {
                 break;
             }
+            read += 1;
+            if read == original_len {
+                return;
+            }
         }
 
-        // Stage 2: Some elements were deleted.
-        while g.processed_len != original_len {
-            process_one::<F, T, CAP, true>(&mut f, &mut g);
+        let mut g = PanicGuard { v: self, read: read + 1, write: read, original_len };
+        unsafe { ptr::drop_in_place(g.v.as_mut_ptr().add(read)) };
+
+        while g.read < original_len {
+            let cur = unsafe { &mut *g.v.as_mut_ptr().add(g.read) };
+            if !f(cur) {
+                g.read += 1;
+                unsafe { ptr::drop_in_place(cur) };
+            } else {
+                unsafe {
+                    // Derive both `cur` and `hole` from the same loan
+                    let ptr = g.v.as_mut_ptr();
+                    let cur = ptr.add(g.read);
+                    let hole = ptr.add(g.write);
+                    ptr::copy_nonoverlapping(cur, hole, 1);
+                }
+                g.write += 1;
+                g.read += 1;
+            }
         }
 
-        drop(g);
+        unsafe { g.v.set_len(g.write) };
+        mem::forget(g);
     }
 
     /// Returns the remaining spare capacity of the vector as a slice of
