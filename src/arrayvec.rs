@@ -535,6 +535,68 @@ impl<T, const CAP: usize> ArrayVec<T, CAP> {
         drop(g);
     }
 
+    /// Retains only the elements specified by the predicate.
+    ///
+    /// In other words, remove all elements `e` such that `f(&mut e)`
+    /// returns `false`. This method does not maintain the relative order of
+    /// the retained elements. If order matters, consider using the [`retain`]
+    /// method. However, if no items are removed, then all items are left
+    /// in their original positions.
+    ///
+    /// [`retain`]: ArrayVec::retain
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use arrayvec::ArrayVec;
+    ///
+    /// let mut array = ArrayVec::from([1, 2, 3, 4]);
+    /// array.retain(|x| *x & 1 != 0 );
+    /// array.sort();
+    /// assert_eq!(&array[..], &[1, 3]);
+    /// ```
+    pub fn retain_unstable<F>(&mut self, mut f: F)
+        where F: FnMut(&mut T) -> bool
+    {
+        let original_len = self.len();
+
+        if original_len == 0 {
+            return;
+        }
+
+        let mut read_back = original_len;
+        let mut hole = loop {
+            if read_back == 0 {
+                return;
+            }
+            let cur = unsafe { &mut *self.as_mut_ptr().add(read_back - 1) };
+            if !f(cur) {
+                break cur;
+            }
+            read_back -= 1;
+        };
+
+        if read_back < self.len() {
+            let swap = self.pop().unwrap();
+            *hole = swap;
+        } else {
+            self.truncate(self.len() - 1);
+        }
+
+        while read_back > 0 {
+            hole = unsafe { &mut *self.as_mut_ptr().add(read_back - 1) };
+            if !f(hole) {
+                if read_back < self.len() {
+                    let swap = self.pop().unwrap();
+                    *hole = swap;
+                } else {
+                    self.truncate(self.len() - 1);
+                }
+            }
+            read_back -= 1;
+        }
+    }
+
     /// Returns the remaining spare capacity of the vector as a slice of
     /// `MaybeUninit<T>`.
     ///

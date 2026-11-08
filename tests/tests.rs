@@ -410,6 +410,35 @@ fn test_retain() {
 }
 
 #[test]
+fn test_retain_unstable() {
+    let mut v = ArrayVec::from([0; 8]);
+    for (i, elt) in v.iter_mut().enumerate() {
+        *elt = i;
+    }
+    v.retain_unstable(|_| true);
+    assert_eq!(&v[..], &[0, 1, 2, 3, 4, 5, 6, 7]);
+    v.retain_unstable(|elt| {
+        *elt /= 2;
+        *elt % 2 == 0
+    });
+    v.sort();
+    assert_eq!(&v[..], &[0, 0, 2, 2]);
+    v.retain_unstable(|_| false);
+    assert_eq!(&v[..], &[]);
+}
+
+#[test]
+#[should_panic]
+fn test_retain_unstable_panic() {
+    let mut v = ArrayVec::from([1, 2, 3]);
+    v.retain_unstable(|elt| match *elt {
+        1 => false,
+        2 => panic!("after something has been deleted"),
+        _ => true,
+    });
+}
+
+#[test]
 #[should_panic]
 fn test_drain_oob() {
     let mut v = ArrayVec::from([0; 8]);
